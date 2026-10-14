@@ -1,7 +1,7 @@
 name: day_diary
 description: "Day Diary — a motion-first photo diary with timestamps."
 publish_to: 'none'
-version: 0.3.0+3
+version: 0.3.1+4
 
 environment:
   sdk: ^3.13.5

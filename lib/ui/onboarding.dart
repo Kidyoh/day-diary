@@ -4,6 +4,7 @@ import 'dart:ui' show lerpDouble;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../data/diary_store.dart';
@@ -112,7 +113,8 @@ class _MorphRow extends StatelessWidget {
 /// What the user chose to do at the end of onboarding.
 enum FirstStep { camera, gallery, later }
 
-/// Three steps: welcome → name and photo → log the first moment.
+/// Three steps on one shared layout — progress bar, headline, caption,
+/// visual, then the same button slots — so nothing jumps between steps.
 class OnboardingScreen extends StatefulWidget {
   const OnboardingScreen({super.key, required this.store, required this.onDone});
 
@@ -147,6 +149,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> with TickerProvider
     super.dispose();
   }
 
+  String get _cleanName => _name.text.trim();
+
   void _go(int step) {
     FocusScope.of(context).unfocus();
     setState(() => _step = step);
@@ -170,21 +174,119 @@ class _OnboardingScreenState extends State<OnboardingScreen> with TickerProvider
   }
 
   Future<void> _finish(FirstStep first) async {
+    if (_saving) return;
     setState(() => _saving = true);
-    await widget.store.completeOnboarding(name: _name.text, avatarBytes: _avatar);
+    await widget.store.completeOnboarding(name: _cleanName, avatarBytes: _avatar);
     widget.onDone(first);
   }
+
+  // ------------------------------------------------------------- content
+
+  ({
+    String headline,
+    String caption,
+    Widget visual,
+    String primary,
+    VoidCallback? onPrimary,
+    String? secondary,
+    VoidCallback? onSecondary,
+    String? link,
+    VoidCallback? onLink,
+  })
+  _content(double s) {
+    switch (_step) {
+      case 0:
+        return (
+          headline: 'ONE PHOTO.\nONE MOMENT.\nEVERY TIME\nSTAMPED.',
+          caption: 'YOUR DAY AS A COLUMN OF PHOTOS. EACH ONE KEEPS THE EXACT TIME IT HAPPENED.',
+          visual: _TimelineDemo(scale: s),
+          primary: 'BEGIN',
+          onPrimary: () => _go(1),
+          secondary: null,
+          onSecondary: null,
+          link: null,
+          onLink: null,
+        );
+      case 1:
+        return (
+          headline: 'WHAT SHOULD\nWE CALL YOU?',
+          caption: 'SHOWN AT THE TOP OF YOUR DIARY. ADD A PHOTO IF YOU LIKE.',
+          visual: _nameForm(s),
+          primary: 'CONTINUE',
+          onPrimary: _cleanName.isEmpty ? null : () => _go(2),
+          secondary: null,
+          onSecondary: null,
+          link: null,
+          onLink: null,
+        );
+      default:
+        return (
+          headline: 'LOG YOUR\nFIRST\nMOMENT.',
+          caption: 'SNAP WHAT\'S IN FRONT OF YOU OR PICK A PHOTO. THE TIME IS STAMPED AUTOMATICALLY.',
+          visual: _AddHint(scale: s, name: _cleanName, avatar: _avatar == null ? null : MemoryImage(_avatar!)),
+          primary: 'TAKE A PHOTO',
+          onPrimary: () => _finish(FirstStep.camera),
+          secondary: 'CHOOSE FROM GALLERY',
+          onSecondary: () => _finish(FirstStep.gallery),
+          link: 'LATER',
+          onLink: () => _finish(FirstStep.later),
+        );
+    }
+  }
+
+  Widget _nameForm(double s) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        GestureDetector(
+          onTap: _pickAvatar,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                padding: EdgeInsets.all(5 * s),
+                decoration: const BoxDecoration(color: DD.ink, shape: BoxShape.circle),
+                child: Avatar(size: 96 * s, image: _avatar == null ? null : MemoryImage(_avatar!), dot: false),
+              ),
+              SizedBox(height: 10 * s),
+              Text(_avatar == null ? '+ ADD PHOTO' : 'CHANGE PHOTO', style: DD.mono(9.5 * s, weight: FontWeight.w400)),
+            ],
+          ),
+        ),
+        SizedBox(height: 26 * s),
+        TextField(
+          controller: _name,
+          focusNode: _nameFocus,
+          textAlign: TextAlign.center,
+          textCapitalization: TextCapitalization.characters,
+          inputFormatters: [_UpperCase()],
+          textInputAction: TextInputAction.done,
+          onSubmitted: (_) {
+            if (_cleanName.isNotEmpty) _go(2);
+          },
+          style: DD.mono(22 * s),
+          cursorColor: DD.ink,
+          decoration: InputDecoration(
+            isDense: true,
+            hintText: 'YOUR NAME',
+            hintStyle: DD.mono(22 * s, color: DD.mute.withValues(alpha: 0.4)),
+            contentPadding: EdgeInsets.symmetric(vertical: 10 * s),
+            enabledBorder: const UnderlineInputBorder(borderSide: BorderSide(color: DD.line)),
+            focusedBorder: const UnderlineInputBorder(borderSide: BorderSide(color: DD.ink, width: 1.4)),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // --------------------------------------------------------------- build
 
   @override
   Widget build(BuildContext context) {
     final mq = MediaQuery.of(context);
     final s = mq.size.width / DD.designWidth;
-    final pad = EdgeInsets.fromLTRB(
-      28 * s,
-      math.max(mq.padding.top, 20) + 24 * s,
-      28 * s,
-      math.max(mq.padding.bottom, 16) + 16 * s,
-    );
+    final c = _content(s);
+    final buttonGap = 8 * s;
 
     return Scaffold(
       backgroundColor: DD.bg,
@@ -192,12 +294,35 @@ class _OnboardingScreenState extends State<OnboardingScreen> with TickerProvider
         children: [
           Positioned.fill(child: DotGrid(scale: s)),
           Padding(
-            padding: pad,
+            padding: EdgeInsets.fromLTRB(
+              28 * s,
+              math.max(mq.padding.top, 20) + 18 * s,
+              28 * s,
+              math.max(mq.padding.bottom, 12) + 12 * s,
+            ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 _Progress(step: _step, scale: s, onBack: _step > 0 ? () => _go(_step - 1) : null),
-                SizedBox(height: 30 * s),
+                SizedBox(height: 34 * s),
+                // Headline + caption: same place on every step.
+                AnimatedBuilder(
+                  animation: _enter,
+                  builder: (context, _) => ScrambleText(
+                    c.headline,
+                    progress: Curves.easeOut.transform(_enter.value),
+                    style: DD.mono(27 * s, height: 1.05, spacing: -0.5 * s),
+                  ),
+                ),
+                SizedBox(height: 14 * s),
+                AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 300),
+                  child: Text(
+                    c.caption,
+                    key: ValueKey(_step),
+                    style: DD.mono(10 * s, weight: FontWeight.w400, color: DD.mute, height: 1.55, spacing: 0.3),
+                  ),
+                ),
                 Expanded(
                   child: AnimatedSwitcher(
                     duration: const Duration(milliseconds: 420),
@@ -206,12 +331,39 @@ class _OnboardingScreenState extends State<OnboardingScreen> with TickerProvider
                     transitionBuilder: (child, a) => FadeTransition(
                       opacity: a,
                       child: SlideTransition(
-                        position: Tween(begin: const Offset(0.08, 0), end: Offset.zero).animate(a),
+                        position: Tween(begin: const Offset(0.06, 0), end: Offset.zero).animate(a),
                         child: child,
                       ),
                     ),
-                    child: KeyedSubtree(key: ValueKey(_step), child: _body(s)),
+                    child: KeyedSubtree(
+                      key: ValueKey(_step),
+                      child: Center(child: SingleChildScrollView(child: c.visual)),
+                    ),
                   ),
+                ),
+                // Button slots: identical positions on every step.
+                PillButton(c.primary, onTap: _saving ? null : c.onPrimary, busy: _saving && _step == 2),
+                SizedBox(height: buttonGap),
+                SizedBox(
+                  height: 48,
+                  child: c.secondary == null
+                      ? null
+                      : PillButton(c.secondary!, dark: false, onTap: _saving ? null : c.onSecondary),
+                ),
+                SizedBox(
+                  height: 40 * s,
+                  child: c.link == null
+                      ? null
+                      : Center(
+                          child: GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: _saving ? null : c.onLink,
+                            child: Padding(
+                              padding: EdgeInsets.symmetric(horizontal: 20 * s, vertical: 10 * s),
+                              child: Text(c.link!, style: DD.mono(10 * s, weight: FontWeight.w400, spacing: 0.6)),
+                            ),
+                          ),
+                        ),
                 ),
               ],
             ),
@@ -220,119 +372,12 @@ class _OnboardingScreenState extends State<OnboardingScreen> with TickerProvider
       ),
     );
   }
+}
 
-  Widget _headline(String text, double s) => AnimatedBuilder(
-    animation: _enter,
-    builder: (context, _) => ScrambleText(
-      text,
-      progress: Curves.easeOut.transform(_enter.value),
-      style: DD.mono(27 * s, height: 1.05, spacing: -0.5 * s),
-    ),
-  );
-
-  Widget _caption(String text, double s) => Text(
-    text,
-    style: DD.mono(10.5 * s, weight: FontWeight.w400, color: DD.mute, height: 1.55, spacing: 0.3),
-  );
-
-  Widget _body(double s) {
-    switch (_step) {
-      case 0:
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _headline('ONE PHOTO.\nONE MOMENT.\nEVERY TIME\nSTAMPED.', s),
-            SizedBox(height: 16 * s),
-            _caption('DAY DIARY KEEPS YOUR DAY AS A COLUMN OF PHOTOS, EACH WITH THE EXACT TIME IT HAPPENED.', s),
-            Expanded(
-              child: Center(child: _TimelineDemo(scale: s)),
-            ),
-            PillButton('BEGIN', onTap: () => _go(1)),
-          ],
-        );
-      case 1:
-        final ready = _name.text.trim().isNotEmpty;
-        return SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _headline('WHAT SHOULD\nWE CALL YOU?', s),
-              SizedBox(height: 34 * s),
-              Center(
-                child: GestureDetector(
-                  onTap: _pickAvatar,
-                  child: Column(
-                    children: [
-                      Container(
-                        padding: EdgeInsets.all(6 * s),
-                        decoration: const BoxDecoration(color: DD.ink, shape: BoxShape.circle),
-                        child: Avatar(size: 104 * s, image: _avatar == null ? null : MemoryImage(_avatar!), dot: false),
-                      ),
-                      SizedBox(height: 10 * s),
-                      Text(
-                        _avatar == null ? '+ ADD PHOTO (OPTIONAL)' : 'CHANGE PHOTO',
-                        style: DD.mono(9.5 * s, weight: FontWeight.w400, color: DD.mute),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              SizedBox(height: 30 * s),
-              Text(
-                'YOUR NAME',
-                style: DD.mono(9 * s, weight: FontWeight.w400, color: DD.mute, spacing: 0.6),
-              ),
-              TextField(
-                controller: _name,
-                focusNode: _nameFocus,
-                textCapitalization: TextCapitalization.words,
-                textInputAction: TextInputAction.done,
-                onSubmitted: (_) {
-                  if (_name.text.trim().isNotEmpty) _go(2);
-                },
-                style: DD.mono(24 * s),
-                cursorColor: DD.ink,
-                decoration: InputDecoration(
-                  isDense: true,
-                  hintText: 'TYPE HERE',
-                  hintStyle: DD.mono(24 * s, color: DD.mute.withValues(alpha: 0.45)),
-                  contentPadding: EdgeInsets.symmetric(vertical: 10 * s),
-                  enabledBorder: const UnderlineInputBorder(borderSide: BorderSide(color: DD.line)),
-                  focusedBorder: const UnderlineInputBorder(borderSide: BorderSide(color: DD.ink, width: 1.4)),
-                ),
-              ),
-              SizedBox(height: 10 * s),
-              if (ready) _caption('YOU\'LL SEE "${pillGreeting(_name.text)}" AT THE TOP OF YOUR DIARY.', s),
-              SizedBox(height: 28 * s),
-              PillButton('CONTINUE', onTap: ready ? () => _go(2) : null),
-            ],
-          ),
-        );
-      default:
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _headline('LOG YOUR\nFIRST\nMOMENT.', s),
-            SizedBox(height: 16 * s),
-            _caption('SNAP WHAT\'S IN FRONT OF YOU OR PICK A PHOTO. THE TIME IS STAMPED AUTOMATICALLY.', s),
-            SizedBox(height: 22 * s),
-            _HowToAdd(scale: s),
-            const Spacer(),
-            PillButton('TAKE A PHOTO', busy: _saving, onTap: () => _finish(FirstStep.camera)),
-            SizedBox(height: 8 * s),
-            PillButton('CHOOSE FROM GALLERY', dark: false, onTap: _saving ? null : () => _finish(FirstStep.gallery)),
-            SizedBox(height: 4 * s),
-            TextButton(
-              onPressed: _saving ? null : () => _finish(FirstStep.later),
-              child: Text(
-                'LATER',
-                style: DD.mono(10.5 * s, weight: FontWeight.w400, color: DD.mute),
-              ),
-            ),
-          ],
-        );
-    }
-  }
+class _UpperCase extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(TextEditingValue oldValue, TextEditingValue newValue) =>
+      newValue.copyWith(text: newValue.text.toUpperCase());
 }
 
 class _Progress extends StatelessWidget {
@@ -348,12 +393,15 @@ class _Progress extends StatelessWidget {
       height: 28 * s,
       child: Row(
         children: [
-          AnimatedOpacity(
-            duration: const Duration(milliseconds: 200),
-            opacity: onBack == null ? 0 : 1,
-            child: GestureDetector(
-              onTap: onBack,
-              child: Text('← BACK', style: DD.mono(10 * s, weight: FontWeight.w400)),
+          IgnorePointer(
+            ignoring: onBack == null,
+            child: AnimatedOpacity(
+              duration: const Duration(milliseconds: 200),
+              opacity: onBack == null ? 0 : 1,
+              child: GestureDetector(
+                onTap: onBack,
+                child: Text('← BACK', style: DD.mono(10 * s, weight: FontWeight.w400)),
+              ),
             ),
           ),
           const Spacer(),
@@ -366,7 +414,7 @@ class _Progress extends StatelessWidget {
               height: 8 * s,
               decoration: BoxDecoration(
                 color: i <= step ? DD.ink : DD.line,
-                borderRadius: BorderRadius.circular(i == step ? 2.5 * s : 4 * s),
+                borderRadius: BorderRadius.circular(4 * s),
               ),
             ),
           SizedBox(width: 10 * s),
@@ -377,8 +425,10 @@ class _Progress extends StatelessWidget {
   }
 }
 
-/// A looping miniature of the timeline: a column of circles where the focus
-/// walks down, each one swelling into a rounded square in turn.
+/// A miniature of the real timeline with the sample photos: a column of
+/// circles where a "finger" presses each in turn and it swells into the
+/// rounded square, with the date and dot-matrix time on the left — exactly
+/// what the app does.
 class _TimelineDemo extends StatefulWidget {
   const _TimelineDemo({required this.scale});
   final double scale;
@@ -388,9 +438,9 @@ class _TimelineDemo extends StatefulWidget {
 }
 
 class _TimelineDemoState extends State<_TimelineDemo> with SingleTickerProviderStateMixin {
-  late final _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 4800))..repeat();
-
-  static const _tones = [Color(0xFF2A2A2D), Color(0xFF8F8D93), Color(0xFF4B4A4F), Color(0xFFBDBBC1)];
+  static const _photos = ['coffee', 'gear', 'summit', 'golden'];
+  static const _times = [(7, 40), (9, 10), (14, 20), (19, 40)];
+  late final _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 6400))..repeat();
 
   @override
   void dispose() {
@@ -401,50 +451,61 @@ class _TimelineDemoState extends State<_TimelineDemo> with SingleTickerProviderS
   @override
   Widget build(BuildContext context) {
     final s = widget.scale;
-    const n = 4;
-    final d = 52 * s, big = 76 * s, gap = 62 * s;
+    final n = _photos.length;
+    final d = 62 * s, big = 90 * s, gap = 74 * s;
+    final width = 250 * s;
     return SizedBox(
-      width: 200 * s,
+      width: width,
       height: gap * (n - 1) + big,
       child: AnimatedBuilder(
         animation: _c,
         builder: (context, _) {
-          // Focus glides 0 → 3 and back, like scrolling down and up.
-          final f = (1 - math.cos(_c.value * math.pi * 2)) / 2 * (n - 1);
-          final children = <({double m, Widget w})>[];
+          // Each photo gets an equal slot: swell in, hold, relax.
+          final slot = _c.value * n;
+          final active = slot.floor() % n;
+          final local = slot - slot.floor();
+          final press = local < 0.3
+              ? Curves.easeOutCubic.transform(local / 0.3)
+              : local < 0.7
+              ? 1.0
+              : 1 - Curves.easeInCubic.transform((local - 0.7) / 0.3);
+          final items = <({double m, Widget w})>[];
           for (var i = 0; i < n; i++) {
-            final near = (1 - (i - f).abs() * 1.4).clamp(0.0, 1.0);
-            final m = near * near * (3 - 2 * near);
+            final m = i == active ? press : 0.0;
             final size = lerpDouble(d, big, m)!;
-            final cx = 100 * s + math.sin(i * 1.3 + 0.4) * 8 * s;
+            final cx = width * 0.62 + math.sin(i * 1.3 + 0.4) * 7 * s - m * 4 * s;
             final cy = big / 2 + i * gap;
-            children.add((
+            items.add((
               m: m,
               w: Positioned(
                 left: cx - size / 2,
                 top: cy - size / 2,
                 width: size,
                 height: size,
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: _tones[i],
-                    borderRadius: BorderRadius.circular(lerpDouble(size / 2, size * 0.24, m)!),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(lerpDouble(size / 2, size * 0.24, m)!),
+                  child: Image.asset(
+                    'assets/samples/${_photos[i]}.jpg',
+                    fit: BoxFit.cover,
+                    cacheWidth: (big * MediaQuery.devicePixelRatioOf(context)).round(),
                   ),
                 ),
               ),
             ));
           }
-          children.sort((a, b) => a.m.compareTo(b.m));
-          // Clock label for the focused one.
-          final hour = 8 + (f.round() * 3);
+          items.sort((a, b) => a.m.compareTo(b.m));
+          final (h, m) = _times[active];
           return Stack(
             clipBehavior: Clip.none,
             children: [
-              for (final c in children) c.w,
+              for (final it in items) it.w,
               Positioned(
                 left: 0,
-                top: big / 2 + f * gap - 8 * s,
-                child: DotMatrixText(clock(DateTime(2026, 1, 1, hour)), pitch: 2.4 * s),
+                top: big / 2 + active * gap - 10 * s,
+                child: Opacity(
+                  opacity: press,
+                  child: DotMatrixText(clock(DateTime(2026, 1, 1, h, m)), pitch: 2.6 * s, maxWidth: 74 * s),
+                ),
               ),
             ],
           );
@@ -454,34 +515,123 @@ class _TimelineDemoState extends State<_TimelineDemo> with SingleTickerProviderS
   }
 }
 
-/// Shows where the + lives so adding later is obvious.
-class _HowToAdd extends StatelessWidget {
-  const _HowToAdd({required this.scale});
+/// The real top-right pill and a dashed add-circle, so the user knows
+/// exactly where adding lives.
+class _AddHint extends StatefulWidget {
+  const _AddHint({required this.scale, required this.name, this.avatar});
   final double scale;
+  final String name;
+  final ImageProvider? avatar;
+
+  @override
+  State<_AddHint> createState() => _AddHintState();
+}
+
+class _AddHintState extends State<_AddHint> with SingleTickerProviderStateMixin {
+  late final _pulse = AnimationController(vsync: this, duration: const Duration(milliseconds: 1600))..repeat();
+
+  @override
+  void dispose() {
+    _pulse.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final s = scale;
-    return Container(
-      padding: EdgeInsets.all(14 * s),
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(18 * s)),
-      child: Row(
-        children: [
-          Container(
-            width: 40 * s,
-            height: 40 * s,
-            decoration: const BoxDecoration(color: DD.ink, shape: BoxShape.circle),
-            child: Icon(Icons.add_rounded, color: Colors.white, size: 22 * s),
-          ),
-          SizedBox(width: 14 * s),
-          Expanded(
-            child: Text(
-              'TAP + (TOP RIGHT) ANYTIME TO ADD A NEW MOMENT. TAP A PHOTO TO OPEN IT, HOLD IT TO EDIT.',
-              style: DD.mono(9 * s, weight: FontWeight.w400, height: 1.5),
+    final s = widget.scale;
+    final label = DD.mono(9 * s, weight: FontWeight.w400, height: 1.45);
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: 76 * s,
+              height: 76 * s,
+              child: CustomPaint(
+                painter: _DashedCircle(s),
+                child: Center(
+                  child: Text('+', style: DD.mono(24 * s, weight: FontWeight.w400)),
+                ),
+              ),
             ),
-          ),
-        ],
-      ),
+            SizedBox(height: 12 * s),
+            Text('TAP A DASHED\nCIRCLE', textAlign: TextAlign.center, style: label),
+          ],
+        ),
+        SizedBox(width: 26 * s),
+        Text('OR', style: label.copyWith(color: DD.mute)),
+        SizedBox(width: 26 * s),
+        Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AnimatedBuilder(
+              animation: _pulse,
+              builder: (context, child) {
+                final t = _pulse.value;
+                return Stack(
+                  clipBehavior: Clip.none,
+                  alignment: Alignment.bottomCenter,
+                  children: [
+                    child!,
+                    // Ring pulsing around the + button.
+                    Positioned(
+                      bottom: 8 * s - 10 * s * t,
+                      child: IgnorePointer(
+                        child: Container(
+                          width: 44 * s + 20 * s * t,
+                          height: 44 * s + 20 * s * t,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: DD.ink.withValues(alpha: (1 - t) * 0.6),
+                              width: 1.5 * s,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              },
+              child: UserPill(
+                scale: s,
+                intro: 1,
+                name: widget.name,
+                avatar: widget.avatar,
+                onAvatar: () {},
+                onAdd: () {},
+              ),
+            ),
+            SizedBox(height: 12 * s),
+            Text('TAP + AT THE\nTOP RIGHT', textAlign: TextAlign.center, style: label),
+          ],
+        ),
+      ],
     );
   }
+}
+
+class _DashedCircle extends CustomPainter {
+  _DashedCircle(this.s);
+  final double s;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = DD.ink
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2 * s;
+    final path = Path()..addOval((Offset.zero & size).deflate(0.6 * s));
+    for (final m in path.computeMetrics()) {
+      for (var d = 0.0; d < m.length; d += 9 * s) {
+        canvas.drawPath(m.extractPath(d, d + 4.5 * s), paint);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_DashedCircle old) => old.s != s;
 }
