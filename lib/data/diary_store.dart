@@ -8,6 +8,9 @@ import 'image_store.dart';
 
 /// Holds every diary entry, the selected day and the user's name, and
 /// persists them on-device.
+/// Build with `--dart-define=EMPTY=true` for the blank edition (no sample day).
+const seedSamples = !bool.fromEnvironment('EMPTY');
+
 class DiaryStore extends ChangeNotifier {
   static const _kEntries = 'entries_v1';
   static const _kName = 'user_name';
@@ -65,7 +68,7 @@ class DiaryStore extends ChangeNotifier {
         debugPrint('Could not read diary entries: $e');
       }
     }
-    if (!(_prefs.getBool(_kSeeded) ?? false)) {
+    if (seedSamples && !(_prefs.getBool(_kSeeded) ?? false)) {
       _all.addAll(_samples());
       await _prefs.setBool(_kSeeded, true);
       await _save();

@@ -10,15 +10,28 @@ import 'dot_matrix.dart';
 
 /// The photo of an entry, or a dot-matrix time card for text-only entries.
 class EntryImage extends StatelessWidget {
-  const EntryImage({super.key, required this.entry, this.scale = 1});
+  const EntryImage({super.key, required this.entry, this.thumbWidth, this.fadeIn = false});
 
   final DiaryEntry entry;
-  final double scale;
+
+  /// Stay transparent until decoded, then fade in (layered over a thumbnail).
+  final bool fadeIn;
+
+  /// Decode at this pixel width instead of full size (timeline thumbnails).
+  /// Keeps scrolling smooth: small circles never upload a full-res photo.
+  final int? thumbWidth;
+
+  static ImageProvider? providerFor(DiaryEntry entry, {int? thumbWidth}) {
+    final full = ImageStore.provider(entry.image);
+    if (full == null || thumbWidth == null) return full;
+    return ResizeImage(full, width: thumbWidth, policy: ResizeImagePolicy.fit);
+  }
 
   @override
   Widget build(BuildContext context) {
-    final provider = ImageStore.provider(entry.image);
+    final provider = providerFor(entry, thumbWidth: thumbWidth);
     if (provider == null) {
+      if (fadeIn) return const SizedBox.shrink();
       return ColoredBox(
         color: const Color(0xFFD6D4D0),
         child: Center(
@@ -34,6 +47,15 @@ class EntryImage extends StatelessWidget {
       fit: BoxFit.cover,
       gaplessPlayback: true,
       filterQuality: FilterQuality.medium,
+      frameBuilder: fadeIn
+          ? (context, child, frame, sync) => sync
+                ? child
+                : AnimatedOpacity(
+                    opacity: frame == null ? 0 : 1,
+                    duration: const Duration(milliseconds: 220),
+                    child: child,
+                  )
+          : null,
       errorBuilder: (_, _, _) => const ColoredBox(color: Color(0xFFD6D4D0)),
     );
   }

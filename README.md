@@ -7,8 +7,9 @@ A motion-first photo diary built in Flutter, based on the
 ## What it does
 
 **Timeline**
-- Entries for the selected day sit in a zig-zag column of circles. Newest is on top.
-- The entry at the focus line morphs into a rounded square. Scrolling snaps to the next entry.
+- Entries for the selected day sit in a zig-zag column of big circles. Newest is on top.
+- At rest everything is a circle. Once you scroll, the photo in focus morphs into a rounded square, and the square travels down the list as you scroll. Scrolling comes to rest exactly on an entry.
+- Tap any photo to open it full screen.
 - The left side shows the focused entry. The date (`MONDAY 01 MAY`) and title (`PROJECT ASSIGNM ENT`) decode in. The time (`9:PM`) dissolves dot by dot. A pixel globe spins.
 - Bottom bar: the scrubber moves through the day, and `07 X` is the number of entries that day.
 
@@ -17,7 +18,6 @@ A motion-first photo diary built in Flutter, based on the
 - The headline decodes in, using the reference's 9 / 7 / 9 line rhythm (`CALCULATE / D_AZIMU / TH: 345°`).
 - The dot-matrix counter shows minutes since the previous entry (`+80`).
 - The note types out, with entry metadata (ID, `LOGGED: 21:00:00`, date).
-- A green scan sweeps across the photo.
 - Overlay text switches between black and white based on how bright the photo is.
 - To close: swipe down, use the side-tab button, or press back.
 
@@ -44,6 +44,15 @@ flutter run            # iOS / Android device or simulator
 flutter run -d chrome  # quick browser preview
 flutter test
 ```
+
+Two editions:
+
+```sh
+flutter build apk --release                                      # "Day Diary Demo" (sample day)
+flutter build apk --release --dart-define=EMPTY=true -Pempty=true # "Day Diary" (starts empty)
+```
+
+The empty edition uses its own app ID (`com.kidyoh.day_diary.empty`), so both can be installed at once.
 
 ## Structure
 

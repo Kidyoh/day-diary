@@ -27,6 +27,12 @@ android {
         // flag during build.
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+
+        // `-P empty=true` builds the blank edition (no sample day) as its own
+        // app, so it installs next to the sample edition.
+        val empty = (project.findProperty("empty") as String?) == "true"
+        if (empty) applicationIdSuffix = ".empty"
+        manifestPlaceholders["appLabel"] = if (empty) "Day Diary" else "Day Diary Demo"
     }
 
     buildTypes {

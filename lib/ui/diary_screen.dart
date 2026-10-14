@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' show lerpDouble;
 
@@ -19,33 +20,36 @@ import 'widgets/scramble_text.dart';
 double _iv(double t, double a, double b) => ((t - a) / (b - a)).clamp(0.0, 1.0);
 double _smooth(double t) => t * t * (3 - 2 * t);
 
-const _greenScan = ColorFilter.matrix([
-  0.04, 0.18, 0.02, 0, 0, //
-  0.28, 1.08, 0.10, 0, 22, //
-  0.10, 0.44, 0.05, 0, 4, //
-  0, 0, 0, 1, 0,
-]);
-
 /// Layout measured from the reference, scaled by screen width.
 class _Geo {
-  _Geo(this.size, EdgeInsets pad) : s = size.width / DD.designWidth, top = pad.top, bottom = pad.bottom {
-    spacing = 116 * s;
-    d = 87 * s;
-    big = 128 * s;
-    focusY = top > 30 ? top + 38 * s : 90 * s;
+  _Geo(this.size, EdgeInsets pad, int count) : s = size.width / DD.designWidth, top = pad.top, bottom = pad.bottom {
+    // Circles take ~27% of the screen width and nearly touch; the selected
+    // one grows ~1.45x into a rounded square that overlaps its neighbours.
+    d = 106 * s;
+    big = 154 * s;
+    spacing = 127 * s;
+    y0 = math.max(top, 20.0) + 62 * s;
     barBottom = math.max(bottom - 12, 12 * s);
     barTop = size.height - barBottom - 58 * s;
+
+    // Scroll travel: enough for the last entry to clear the bottom bar, and
+    // never less than half a row per entry so even a short day scrolls.
+    final n = math.max(count, 1);
+    final natural = y0 + (n - 1) * spacing - (barTop - spacing * 0.62);
+    travel = n <= 1 ? 0 : math.max(natural, (n - 1) * spacing * 0.5);
+    padTop = y0 - spacing / 2;
+    padBottom = travel + size.height - padTop - n * spacing;
   }
 
   final Size size;
   final double s, top, bottom;
-  late final double spacing, d, big, focusY, barBottom, barTop;
+  late final double d, big, spacing, y0, barBottom, barTop, travel, padTop, padBottom;
 
   double get w => size.width;
   double get h => size.height;
 
   /// Gentle zig-zag of the photo column.
-  double columnX(int i) => w * 0.462 + math.sin(i * 1.1) * 10 * s;
+  double columnX(int i) => w * 0.5 + math.sin(i * 1.3 + 0.4) * 9 * s;
 }
 
 class DiaryScreen extends StatefulWidget {
@@ -58,20 +62,29 @@ class DiaryScreen extends StatefulWidget {
 
 class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin {
   final _scroll = ScrollController();
-  late final _intro = AnimationController(vsync: this, duration: const Duration(milliseconds: 2400));
-  late final _expand = AnimationController(vsync: this, duration: const Duration(milliseconds: 820));
+  late final _intro = AnimationController(vsync: this, duration: const Duration(milliseconds: 2200));
+  // 0 = every entry is a circle; 1 = the entry in focus becomes a rounded square.
+  late final _engage = AnimationController(vsync: this, duration: const Duration(milliseconds: 420));
+  late final _press = AnimationController(vsync: this, duration: const Duration(milliseconds: 180));
+  late final _expand = AnimationController(vsync: this, duration: const Duration(milliseconds: 760));
   late final _detail = AnimationController(vsync: this, duration: const Duration(milliseconds: 3400));
-  late final _scan = AnimationController(vsync: this, duration: const Duration(milliseconds: 6400));
   late final _blink = AnimationController(vsync: this, duration: const Duration(milliseconds: 1000))..repeat();
 
   DiaryStore get store => widget.store;
   late List<DiaryEntry> _entries = store.dayEntries;
   late DateTime _shownDay = store.selectedDay;
-  int _focus = 0;
   _Geo? _geo;
+
+  /// Entry shown by the left-hand labels (updated once scrolling settles on it).
+  int _labelIndex = 0;
+  int _labelTarget = 0;
+  Timer? _labelTimer;
+
+  String? _pressedId;
 
   DiaryEntry? _open;
   Rect _from = Rect.zero;
+  double _fromRadius = 0;
   ({double top, double bottom}) _luma = (top: 0.8, bottom: 0.4);
   bool _closing = false;
   double _drag = 0;
@@ -84,17 +97,15 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
     _expand.addStatusListener((s) {
       if (s == AnimationStatus.completed && _open != null) _detail.forward(from: 0);
     });
-    _detail.addStatusListener((s) {
-      if (s == AnimationStatus.completed && _open != null) _scan.repeat();
-    });
     _intro.forward();
   }
 
   @override
   void dispose() {
     store.removeListener(_onStore);
+    _labelTimer?.cancel();
     _scroll.dispose();
-    for (final c in [_intro, _expand, _detail, _scan, _blink]) {
+    for (final c in [_intro, _engage, _press, _expand, _detail, _blink]) {
       c.dispose();
     }
     super.dispose();
@@ -108,7 +119,8 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
     setState(() {
       _entries = list;
       _shownDay = store.selectedDay;
-      _focus = _focus.clamp(0, math.max(0, list.length - 1));
+      _labelIndex = _labelIndex.clamp(0, math.max(0, list.length - 1));
+      _labelTarget = _labelIndex;
       if (_open != null) {
         final i = list.indexWhere((e) => e.id == _open!.id);
         if (i < 0 || dayChanged) {
@@ -120,81 +132,130 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
     });
     if (dayChanged) {
       if (_scroll.hasClients) _scroll.jumpTo(0);
-      _focus = 0;
+      _labelIndex = _labelTarget = 0;
+      _engage.value = 0;
       _intro.forward(from: 0);
     }
   }
 
-  void _onScroll() {
-    final g = _geo;
-    if (g == null || _entries.isEmpty) return;
-    final i = (_scroll.offset / g.spacing).round().clamp(0, _entries.length - 1);
-    if (i != _focus) setState(() => _focus = i);
-  }
-
   double get _offset => _scroll.hasClients ? _scroll.offset : 0;
 
-  double _introDy(int i, _Geo g) {
-    final k = math.min(i, 8);
-    final p = _iv(_intro.value, 0.04 + k * 0.045, 0.6 + k * 0.045);
-    return (1 - Curves.easeOutCubic.transform(p)) * (g.h * 0.9 + k * 26 * g.s);
+  /// Fractional index of the entry in focus. The focus point travels from the
+  /// first entry to the last as you scroll from top to bottom, so it walks
+  /// down the screen like the reference.
+  double get _focus {
+    final g = _geo;
+    if (g == null || _entries.length < 2 || g.travel <= 0) return 0;
+    return ((_entries.length - 1) * _offset / g.travel).clamp(0.0, _entries.length - 1.0);
   }
 
-  ({Rect rect, double radius, double focus}) _itemBox(int i, _Geo g) {
-    final cy = g.focusY + i * g.spacing - _offset + _introDy(i, g);
-    final f = _smooth((1 - (cy - g.focusY).abs() / g.spacing).clamp(0.0, 1.0));
-    final size = lerpDouble(g.d, g.big, f)!;
-    final cx = g.columnX(i) - f * 3 * g.s;
+  double _offsetFor(int i) {
+    final g = _geo;
+    if (g == null || _entries.length < 2) return 0;
+    return g.travel * i / (_entries.length - 1);
+  }
+
+  void _onScroll() {
+    if (_entries.isEmpty) return;
+    _labelTarget = _focus.round();
+  }
+
+  /// Labels decode only once scrolling has fully stopped, never mid-drag.
+  void _onScrollIdle() {
+    _labelTimer?.cancel();
+    _labelTimer = Timer(const Duration(milliseconds: 60), () {
+      if (!mounted || !_scroll.hasClients || _scroll.position.isScrollingNotifier.value) return;
+      if (_labelIndex != _labelTarget && _open == null) setState(() => _labelIndex = _labelTarget);
+    });
+  }
+
+  double _introDy(int i, _Geo g) {
+    if (_intro.isCompleted) return 0;
+    final k = math.min(i, 7);
+    final p = _iv(_intro.value, 0.02 + k * 0.05, 0.5 + k * 0.05);
+    return (1 - Curves.easeOutQuart.transform(p)) * (g.h * 0.85 + k * 30 * g.s);
+  }
+
+  ({Rect rect, double radius, double morph}) _itemBox(int i, _Geo g, double focus) {
+    final cy = g.y0 + i * g.spacing - _offset + _introDy(i, g);
+    final near = _smooth((1 - (i - focus).abs() * 1.4).clamp(0.0, 1.0));
+    var m = near * Curves.easeOutCubic.transform(_engage.value);
+    if (_pressedId != null && _entries[i].id == _pressedId) {
+      m = math.max(m, Curves.easeOutCubic.transform(_press.value));
+    }
+    final size = lerpDouble(g.d, g.big, m)!;
+    final cx = g.columnX(i) - m * 6 * g.s;
     return (
       rect: Rect.fromCenter(center: Offset(cx, cy), width: size, height: size),
-      radius: lerpDouble(size / 2, size * 0.22, f)!,
-      focus: f,
+      radius: lerpDouble(size / 2, size * 0.24, m)!,
+      morph: m,
     );
   }
 
   Iterable<int> _visible(_Geo g) sync* {
     if (_entries.isEmpty) return;
-    final first = ((_offset - g.focusY - g.big) / g.spacing).floor().clamp(0, _entries.length - 1);
-    final last = ((_offset + g.h - g.focusY + g.big) / g.spacing).ceil().clamp(0, _entries.length - 1);
+    final first = ((_offset - g.y0 - g.big) / g.spacing).floor().clamp(0, _entries.length - 1);
+    final last = ((_offset + g.h - g.y0 + g.big) / g.spacing).ceil().clamp(0, _entries.length - 1);
     for (var i = first; i <= last; i++) {
       yield i;
     }
   }
 
+  int? _hit(Offset p) {
+    final g = _geo;
+    if (g == null) return null;
+    final f = _focus;
+    int? best;
+    var bestM = -1.0;
+    for (final i in _visible(g)) {
+      final b = _itemBox(i, g, f);
+      if (b.rect.inflate(4).contains(p) && b.morph > bestM) {
+        best = i;
+        bestM = b.morph;
+      }
+    }
+    return best;
+  }
+
   void _scrollTo(int i) {
-    final g = _geo;
-    if (g == null || !_scroll.hasClients) return;
-    _scroll.animateTo(
-      (i * g.spacing).clamp(0, _scroll.position.maxScrollExtent),
-      duration: const Duration(milliseconds: 520),
-      curve: Curves.easeOutCubic,
-    );
+    if (!_scroll.hasClients) return;
+    _engage.forward();
+    _scroll.animateTo(_offsetFor(i), duration: const Duration(milliseconds: 600), curve: Curves.easeOutCubic);
   }
 
-  void _onTap(Offset p) {
-    final g = _geo;
-    if (g == null) return;
-    for (final i in _visible(g)) {
-      if (_itemBox(i, g).rect.inflate(6).contains(p)) {
-        if (i == _focus && (_offset - i * g.spacing).abs() < g.spacing * 0.2) {
-          _openEntry(i);
-        } else {
-          _scrollTo(i);
-        }
-        return;
-      }
-    }
+  // ------------------------------------------------------------- touches
+
+  void _onTapDown(TapDownDetails d) {
+    final i = _hit(d.localPosition);
+    if (i == null) return;
+    final provider = EntryImage.providerFor(_entries[i]);
+    if (provider != null) precacheImage(provider, context);
+    setState(() => _pressedId = _entries[i].id);
+    _press.forward();
   }
 
-  void _onLongPress(Offset p) {
-    final g = _geo;
-    if (g == null) return;
-    for (final i in _visible(g)) {
-      if (_itemBox(i, g).rect.contains(p)) {
-        _entryActions(_entries[i]);
-        return;
-      }
+  void _onTapUp(TapUpDetails d) {
+    final i = _hit(d.localPosition);
+    if (i == null || _entries[i].id != _pressedId) {
+      _release();
+      return;
     }
+    _openEntry(i);
+  }
+
+  void _release() {
+    _press.reverse().whenComplete(() {
+      if (mounted && _press.isDismissed && _open == null) setState(() => _pressedId = null);
+    });
+  }
+
+  bool _onScrollNotification(ScrollNotification n) {
+    if (n is ScrollStartNotification && n.dragDetails != null) {
+      _engage.forward();
+      if (_pressedId != null) _release();
+    }
+    if (n is ScrollEndNotification) _onScrollIdle();
+    return false;
   }
 
   // --------------------------------------------------------------- detail
@@ -203,30 +264,33 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
     final g = _geo;
     if (g == null || _open != null || i >= _entries.length) return;
     final e = _entries[i];
-    final box = _itemBox(i, g);
+    final box = _itemBox(i, g, _focus);
+    _labelTimer?.cancel();
     setState(() {
       _open = e;
+      _pressedId = e.id;
       _from = box.rect;
+      _fromRadius = box.radius;
+      _labelIndex = _labelTarget = i;
       _luma = Luma.cached(e) ?? (top: 0.8, bottom: 0.4);
       _drag = 0;
     });
     Luma.of(e).then((l) {
       if (mounted && _open?.id == e.id) setState(() => _luma = l);
     });
+    _press.value = 1;
     _detail.value = 0;
-    _scan
-      ..stop()
-      ..value = 0;
     _expand.forward(from: 0);
   }
 
   Future<void> _close() async {
     if (_open == null || _closing) return;
     _closing = true;
-    _scan.stop();
-    await _detail.animateBack(0, duration: const Duration(milliseconds: 300), curve: Curves.easeIn);
+    await _detail.animateBack(0, duration: const Duration(milliseconds: 280), curve: Curves.easeIn);
     await _expand.reverse();
-    if (mounted) setState(_resetDetail);
+    if (!mounted) return;
+    setState(_resetDetail);
+    _release();
   }
 
   void _resetDetail() {
@@ -235,9 +299,6 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
     _drag = 0;
     _expand.value = 0;
     _detail.value = 0;
-    _scan
-      ..stop()
-      ..value = 0;
   }
 
   // ---------------------------------------------------------------- sheets
@@ -255,6 +316,7 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
   }
 
   Future<void> _entryActions(DiaryEntry e) async {
+    if (_pressedId != null && _open == null) _release();
     final action = await showDiarySheet<EntryAction>(context, EntryActionsSheet(entry: e));
     if (!mounted) return;
     switch (action) {
@@ -285,8 +347,9 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
         resizeToAvoidBottomInset: false,
         body: LayoutBuilder(
           builder: (context, box) {
-            final g = _Geo(box.biggest, MediaQuery.paddingOf(context));
+            final g = _Geo(box.biggest, MediaQuery.paddingOf(context), _entries.length);
             _geo = g;
+            final thumb = (g.big * MediaQuery.devicePixelRatioOf(context)).round();
             return Stack(
               clipBehavior: Clip.hardEdge,
               children: [
@@ -296,9 +359,9 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
                     builder: (_, _) => DotGrid(scale: g.s, offset: _offset),
                   ),
                 ),
-                Positioned.fill(child: _items(g)),
+                Positioned.fill(child: _items(g, thumb)),
                 Positioned.fill(child: _scrollSurface(g)),
-                if (_open != null) Positioned.fill(child: _expanded(g)),
+                if (_open != null) Positioned.fill(child: _expanded(g, thumb)),
                 Positioned.fill(child: IgnorePointer(child: _labels(g))),
                 if (_open != null) Positioned.fill(child: IgnorePointer(child: _detailTexts(g))),
                 _sideTab(g),
@@ -312,33 +375,33 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
     );
   }
 
-  Widget _items(_Geo g) {
+  Widget _items(_Geo g, int thumb) {
     return RepaintBoundary(
       child: AnimatedBuilder(
-        animation: Listenable.merge([_scroll, _intro]),
+        animation: Listenable.merge([_scroll, _intro, _engage, _press]),
         builder: (context, _) {
           if (_entries.isEmpty) return _emptySlot(g);
-          final items = <({double focus, Widget child})>[];
+          final f = _focus;
+          final items = <({double morph, Widget child})>[];
           for (final i in _visible(g)) {
             if (_open != null && _entries[i].id == _open!.id) continue;
-            final b = _itemBox(i, g);
+            final b = _itemBox(i, g, f);
             if (b.rect.top > g.h || b.rect.bottom < 0) continue;
             items.add((
-              focus: b.focus,
+              morph: b.morph,
               child: Positioned.fromRect(
                 key: ValueKey(_entries[i].id),
                 rect: b.rect,
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(b.radius),
-                  child: EntryImage(entry: _entries[i]),
+                  child: EntryImage(entry: _entries[i], thumbWidth: thumb),
                 ),
               ),
             ));
           }
-          // Paint the focused item last so it overlaps its neighbours.
-          items.sort((a, b) => a.focus.compareTo(b.focus));
-          final children = [for (final it in items) it.child];
-          return Stack(clipBehavior: Clip.none, children: children);
+          // Paint the rounded square last so it overlaps its neighbours.
+          items.sort((a, b) => a.morph.compareTo(b.morph));
+          return Stack(clipBehavior: Clip.none, children: [for (final it in items) it.child]);
         },
       ),
     );
@@ -349,17 +412,17 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
     return Stack(
       children: [
         Positioned(
-          left: g.columnX(0) - g.big / 2,
-          top: g.focusY - g.big / 2,
+          left: g.columnX(0) - g.d / 2,
+          top: g.y0 - g.d / 2,
           child: Transform.scale(
             scale: p,
             child: GestureDetector(
               onTap: () => _compose(),
               child: CustomPaint(
-                size: Size.square(g.big),
-                painter: _DashedSquirclePainter(g.s),
+                size: Size.square(g.d),
+                painter: _DashedCirclePainter(g.s),
                 child: SizedBox.square(
-                  dimension: g.big,
+                  dimension: g.d,
                   child: Center(
                     child: Text('+', style: DD.mono(30 * g.s, weight: FontWeight.w400)),
                   ),
@@ -373,31 +436,42 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
   }
 
   Widget _scrollSurface(_Geo g) {
+    final n = math.max(_entries.length, 1);
     return IgnorePointer(
       ignoring: _open != null || _entries.isEmpty,
       child: GestureDetector(
         behavior: HitTestBehavior.translucent,
-        onTapUp: (d) => _onTap(d.localPosition),
-        onLongPressStart: (d) => _onLongPress(d.localPosition),
-        child: ScrollConfiguration(
-          behavior: const _AnyPointerScroll(),
-          child: ListView.builder(
-            controller: _scroll,
-            physics: _SnapPhysics(extent: g.spacing),
-            itemExtent: g.spacing,
-            padding: EdgeInsets.only(top: g.focusY - g.spacing / 2, bottom: g.h - g.focusY - g.spacing / 2),
-            itemCount: math.max(_entries.length, 1),
-            itemBuilder: (_, _) => const SizedBox.shrink(),
+        onTapDown: _onTapDown,
+        onTapUp: _onTapUp,
+        onTapCancel: () {
+          if (_open == null && _pressedId != null) _release();
+        },
+        onLongPressStart: (d) {
+          final i = _hit(d.localPosition);
+          if (i != null) _entryActions(_entries[i]);
+        },
+        child: NotificationListener<ScrollNotification>(
+          onNotification: _onScrollNotification,
+          child: ScrollConfiguration(
+            behavior: const _AnyPointerScroll(),
+            child: ListView.builder(
+              controller: _scroll,
+              physics: _SnapPhysics(count: n),
+              itemExtent: g.spacing,
+              padding: EdgeInsets.only(top: g.padTop, bottom: g.padBottom),
+              itemCount: n,
+              itemBuilder: (_, _) => const SizedBox.shrink(),
+            ),
           ),
         ),
       ),
     );
   }
 
-  Widget _expanded(_Geo g) {
+  Widget _expanded(_Geo g, int thumb) {
     final e = _open!;
     return AnimatedBuilder(
-      animation: Listenable.merge([_expand, _scan]),
+      animation: _expand,
       builder: (context, _) {
         final v = _expand.value;
         final t = Curves.easeInOutCubic.transform(v);
@@ -420,7 +494,9 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
             height: rect.height * (1 - dragK * 0.5),
           );
         }
-        final radius = lerpDouble(_from.width * 0.22, 0, t)! + dragK * 120 * g.s;
+        // Circle → rounded square happens in the first part of the growth.
+        final squared = lerpDouble(_fromRadius, _from.width * 0.24, _iv(v, 0, 0.25))!;
+        final radius = lerpDouble(squared, 0, t)! + dragK * 120 * g.s;
         return Stack(
           children: [
             Positioned.fromRect(
@@ -443,8 +519,9 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
-                      EntryImage(entry: e),
-                      _scanLayer(e),
+                      // Thumbnail shows instantly; the full photo fades over it.
+                      EntryImage(entry: e, thumbWidth: thumb),
+                      EntryImage(entry: e, fadeIn: true),
                     ],
                   ),
                 ),
@@ -456,46 +533,11 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
     );
   }
 
-  Widget _scanLayer(DiaryEntry e) {
-    final v = _scan.value;
-    final sweep = Curves.easeInOutSine.transform(_iv(v, 0, 0.45));
-    final fade = 1 - _iv(v, 0.66, 0.82);
-    if (sweep <= 0 || fade <= 0) return const SizedBox.shrink();
-    final edge = sweep * 1.25;
-    return IgnorePointer(
-      child: Opacity(
-        opacity: fade * 0.78,
-        child: ShaderMask(
-          blendMode: BlendMode.dstIn,
-          shaderCallback: (r) => LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: const [Colors.transparent, Colors.white, Colors.white, Colors.transparent],
-            stops: const [0.32, 0.55, 0.88, 1],
-          ).createShader(r),
-          child: ShaderMask(
-            blendMode: BlendMode.dstIn,
-            shaderCallback: (r) => LinearGradient(
-              begin: Alignment.centerRight,
-              end: Alignment.centerLeft,
-              colors: const [Colors.white, Colors.white, Colors.transparent],
-              stops: [0, (edge - 0.25).clamp(0.0, 1.0), edge.clamp(0.0, 1.0)],
-            ).createShader(r),
-            child: ColorFiltered(
-              colorFilter: _greenScan,
-              child: EntryImage(entry: e),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
   Widget _labels(_Geo g) {
     final s = g.s;
-    final focused = _entries.isEmpty ? null : _entries[_focus.clamp(0, _entries.length - 1)];
+    final focused = _entries.isEmpty ? null : _entries[_labelIndex.clamp(0, _entries.length - 1)];
     final day = focused?.createdAt ?? store.selectedDay;
-    final time = focused == null ? '--:--' : clock(focused.createdAt);
+    final time = clock(focused?.createdAt ?? DateTime.now());
     final title = focused == null ? 'LOG YOUR FIRST MOMENT' : focused.title.toUpperCase();
     final labelStyle = DD.mono(9.6 * s, height: 1.32, spacing: 0.1);
 
@@ -511,7 +553,7 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
           children: [
             Positioned(
               left: 29 * s,
-              top: g.focusY + 12 * s,
+              top: g.y0 - 8 * s,
               child: Opacity(
                 opacity: dateO,
                 child: SwapScrambleText(stackedDate(day), style: labelStyle),
@@ -519,23 +561,23 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
             ),
             Positioned(
               left: 50 * s,
-              top: g.focusY + 160 * s - 16 * s,
+              top: g.y0 + 1.18 * g.spacing - 16 * s,
               child: Opacity(
                 opacity: globeO,
                 child: PixelGlobe(size: 33 * s),
               ),
             ),
             Positioned(
-              left: 46 * s,
-              top: g.focusY + 275 * s - 10 * s,
+              left: 44 * s,
+              top: g.y0 + 2.12 * g.spacing - 10 * s,
               child: Opacity(
                 opacity: timeO,
-                child: DotMatrixText(time, pitch: 3 * s, maxWidth: 88 * s, dotFraction: 0.8),
+                child: DotMatrixText(time, pitch: 3 * s, maxWidth: 80 * s, dotFraction: 0.8),
               ),
             ),
             Positioned(
-              left: 70 * s,
-              top: g.focusY + 372 * s,
+              left: 62 * s,
+              top: g.y0 + 2.95 * g.spacing,
               child: Opacity(
                 opacity: titleO,
                 child: SwapScrambleText(hardWrap(title, 7), style: labelStyle),
@@ -554,7 +596,9 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
     final darkBottom = _luma.bottom > 0.62;
     final topInk = darkTop ? DD.ink : Colors.white;
     final bottomInk = darkBottom ? DD.ink : Colors.white;
-    final shadow = [Shadow(color: Colors.black.withValues(alpha: darkBottom ? 0 : 0.35), blurRadius: 6)];
+    // Soft halo in the opposite colour keeps text readable on mixed photos.
+    final halo = darkBottom ? Colors.white : Colors.black;
+    final shadow = [Shadow(color: halo.withValues(alpha: 0.55), blurRadius: 8)];
 
     final delta = store.minutesSincePrevious(e);
     final deltaText = delta == null
@@ -608,7 +652,7 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
                 deltaText,
                 pitch: 7.2 * s,
                 color: bottomInk,
-                outline: darkBottom ? null : Colors.black.withValues(alpha: 0.18),
+                outline: halo.withValues(alpha: 0.4),
                 reveal: _iv(d, 0.42, 0.74),
               ),
             ),
@@ -634,7 +678,7 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
   Widget _sideTab(_Geo g) {
     return Positioned(
       right: 0,
-      top: g.focusY + 283 * g.s,
+      top: g.y0 + 2.45 * g.spacing,
       child: AnimatedBuilder(
         animation: _intro,
         builder: (context, child) {
@@ -648,7 +692,7 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
             if (_open != null) {
               _close();
             } else if (_entries.isNotEmpty) {
-              _openEntry(_focus);
+              _openEntry(_focus.round());
             }
           },
           onArchive: _archive,
@@ -683,22 +727,20 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
       child: AnimatedBuilder(
         animation: _scroll,
         builder: (context, _) {
-          final max = _scroll.hasClients && _scroll.position.hasContentDimensions
-              ? _scroll.position.maxScrollExtent
-              : 0.0;
           return BottomBar(
             scale: g.s,
-            value: max <= 0 ? 0 : (_offset / max).clamp(0.0, 1.0),
+            value: g.travel <= 0 ? 0 : (_offset / g.travel).clamp(0.0, 1.0),
             count: _entries.length,
             onMenu: _profile,
             onExplore: _archive,
             onScrub: (v) {
               if (_open != null || !_scroll.hasClients) return;
-              _scroll.jumpTo(v * _scroll.position.maxScrollExtent);
+              _engage.forward();
+              _scroll.jumpTo(v * g.travel);
             },
             onScrubEnd: () {
               if (_open != null || _entries.isEmpty) return;
-              _scrollTo((_offset / g.spacing).round());
+              _scrollTo(_focus.round());
             },
           );
         },
@@ -721,48 +763,48 @@ class _AnyPointerScroll extends ScrollBehavior {
   Widget buildOverscrollIndicator(BuildContext context, Widget child, ScrollableDetails details) => child;
 }
 
-/// Lands every fling exactly on an entry so one is always in focus.
+/// Natural iOS-style scrolling that comes to rest exactly on an entry, with a
+/// critically damped spring (no overshoot, no wobble).
 class _SnapPhysics extends ScrollPhysics {
-  const _SnapPhysics({required this.extent, super.parent});
+  const _SnapPhysics({required this.count, super.parent});
 
-  final double extent;
+  final int count;
 
   @override
-  _SnapPhysics applyTo(ScrollPhysics? ancestor) => _SnapPhysics(extent: extent, parent: buildParent(ancestor));
+  _SnapPhysics applyTo(ScrollPhysics? ancestor) => _SnapPhysics(count: count, parent: buildParent(ancestor));
 
   @override
   ScrollPhysics buildParent(ScrollPhysics? ancestor) =>
       const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics());
 
+  static final _spring = SpringDescription.withDampingRatio(mass: 0.5, stiffness: 100, ratio: 1);
+
   @override
   Simulation? createBallisticSimulation(ScrollMetrics position, double velocity) {
-    if (position.outOfRange) return super.createBallisticSimulation(position, velocity);
+    final step = count > 1 ? position.maxScrollExtent / (count - 1) : 0.0;
+    if (step <= 0 || position.outOfRange) return super.createBallisticSimulation(position, velocity);
     final tolerance = toleranceFor(position);
     final projected = velocity.abs() < tolerance.velocity
         ? position.pixels
         : FrictionSimulation(0.135, position.pixels, velocity).finalX;
-    final target = ((projected / extent).roundToDouble() * extent).clamp(
+    final target = ((projected / step).roundToDouble() * step).clamp(
       position.minScrollExtent,
       position.maxScrollExtent,
     );
-    if ((target - position.pixels).abs() < tolerance.distance) return null;
-    return ScrollSpringSimulation(
-      const SpringDescription(mass: 1, stiffness: 140, damping: 22),
-      position.pixels,
-      target,
-      velocity,
-      tolerance: tolerance,
-    );
+    if ((target - position.pixels).abs() < tolerance.distance && velocity.abs() < tolerance.velocity) {
+      return null;
+    }
+    return ScrollSpringSimulation(_spring, position.pixels, target, velocity, tolerance: tolerance);
   }
 }
 
-class _DashedSquirclePainter extends CustomPainter {
-  _DashedSquirclePainter(this.s);
+class _DashedCirclePainter extends CustomPainter {
+  _DashedCirclePainter(this.s);
   final double s;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final rrect = RRect.fromRectAndRadius(Offset.zero & size, Radius.circular(size.width * 0.22));
+    final rrect = RRect.fromRectAndRadius(Offset.zero & size, Radius.circular(size.width / 2));
     final paint = Paint()
       ..color = DD.ink
       ..style = PaintingStyle.stroke
@@ -776,5 +818,5 @@ class _DashedSquirclePainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_DashedSquirclePainter old) => old.s != s;
+  bool shouldRepaint(_DashedCirclePainter old) => old.s != s;
 }

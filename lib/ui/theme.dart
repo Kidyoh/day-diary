@@ -9,7 +9,6 @@ abstract final class DD {
   static const dot = Color(0xFFBEBDC6);
   static const mute = Color(0xFF8C8B93);
   static const line = Color(0xFFD9D8DE);
-  static const scan = Color(0xFF39E07A);
 
   static const font = 'SpaceMono';
 
