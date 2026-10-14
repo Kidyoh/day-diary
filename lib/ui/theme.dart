@@ -4,9 +4,9 @@ import 'package:flutter/material.dart';
 
 /// Design tokens taken from the reference motion piece.
 abstract final class DD {
-  static const bg = Color(0xFFF4F3F6);
+  static const bg = Color(0xFFF8F7F9);
   static const ink = Color(0xFF0B0B0C);
-  static const dot = Color(0xFFBEBDC6);
+  static const dot = Color(0xFFBDBCC2);
   static const mute = Color(0xFF8C8B93);
   static const line = Color(0xFFD9D8DE);
 

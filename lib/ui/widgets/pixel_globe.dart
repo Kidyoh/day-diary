@@ -38,7 +38,7 @@ class _GlobePainter extends CustomPainter {
 
   final Animation<double> spin;
   final Color color;
-  static const n = 11;
+  static const n = 12;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -52,9 +52,9 @@ class _GlobePainter extends CustomPainter {
       for (var i = 0; i < n; i++) {
         final x = (i + 0.5) * cell - 1;
         final r = math.sqrt(x * x + y * y);
-        if (r > 1.02) continue;
-        var on = r > 1 - cell * 0.95; // outline ring
-        if (!on && y.abs() < cell * 0.5) on = true; // equator
+        if (r > 1.04) continue;
+        var on = r > 1 - cell * 1.6; // heavy outline ring (2 cells)
+        if (!on && y.abs() < cell * 0.95) on = true; // thick equator
         if (!on) {
           // Four meridians, projected to screen space (front side only).
           final halfWidth = math.sqrt(math.max(0, 1 - y * y));
@@ -62,7 +62,7 @@ class _GlobePainter extends CustomPainter {
             final a = phase + k * math.pi / 2;
             if (math.cos(a) <= 0.05) continue;
             final mx = math.sin(a) * halfWidth;
-            if ((x - mx).abs() < cell * 0.5) on = true;
+            if ((x - mx).abs() < cell * 0.9) on = true;
           }
         }
         if (on) {

@@ -28,7 +28,7 @@ A motion-first photo diary built in Flutter, based on the
   - Archive of days
   - New entry from the gallery
 - Avatar or ☰: your name, and remove the sample entries.
-- Long-press an entry: edit or delete it.
+- Open an entry and long-press the photo: edit or delete it.
 
 **Storage**
 - Everything is stored on-device.

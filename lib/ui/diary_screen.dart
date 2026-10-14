@@ -21,21 +21,21 @@ double _iv(double t, double a, double b) => ((t - a) / (b - a)).clamp(0.0, 1.0);
 
 /// Layout measured from the reference, scaled by screen width.
 class _Geo {
+  // Measured from the reference frame flattened to 393 × 852: circles 112pt
+  // in one centred column, 144.5pt apart, first centre at y 102.7; pressed
+  // square 165pt; bottom bar 64pt tall, 20pt from the bottom edge.
   _Geo(this.size, EdgeInsets pad, int count) : s = size.width / DD.designWidth, top = pad.top, bottom = pad.bottom {
-    // Circles take ~27% of the screen width and nearly touch; the selected
-    // one grows ~1.45x into a rounded square that overlaps its neighbours.
-    d = 106 * s;
-    big = 154 * s;
-    spacing = 127 * s;
-    y0 = math.max(top, 20.0) + 62 * s;
-    barBottom = math.max(bottom - 12, 12 * s);
-    barTop = size.height - barBottom - 58 * s;
+    d = 112 * s;
+    big = 165 * s;
+    spacing = 144.75 * s;
+    y0 = 102.7 * s;
+    barBottom = math.max(20 * s, bottom + 6);
+    barTop = size.height - barBottom - 64 * s;
 
-    // Scroll travel: enough for the last entry to clear the bottom bar, and
-    // never less than half a row per entry so even a short day scrolls.
+    // Scroll only once the column no longer fits above the bar, in whole rows.
     final n = math.max(count, 1);
-    final natural = y0 + (n - 1) * spacing - (barTop - spacing * 0.62);
-    travel = n <= 1 ? 0 : math.max(natural, (n - 1) * spacing * 0.5);
+    final fits = ((barTop - 20 * s - y0) / spacing).floor() + 1;
+    travel = math.max(0, n - fits) * spacing;
     padTop = y0 - spacing / 2;
     padBottom = travel + size.height - padTop - n * spacing;
   }
@@ -47,8 +47,7 @@ class _Geo {
   double get w => size.width;
   double get h => size.height;
 
-  /// Gentle zig-zag of the photo column.
-  double columnX(int i) => w * 0.5 + math.sin(i * 1.3 + 0.4) * 9 * s;
+  double columnX(int i) => w / 2;
 }
 
 class DiaryScreen extends StatefulWidget {
@@ -82,6 +81,9 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
   Timer? _labelTimer;
 
   String? _pressedId;
+
+  /// Scrubber position while the user drags it.
+  double? _scrub;
 
   DiaryEntry? _open;
   Rect _from = Rect.zero;
@@ -149,16 +151,17 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
   /// Fractional index of the entry in focus. The focus point travels from the
   /// first entry to the last as you scroll from top to bottom, so it walks
   /// down the screen like the reference.
+  /// Index of the entry at the top of the column (fractional mid-scroll).
   double get _focus {
     final g = _geo;
-    if (g == null || _entries.length < 2 || g.travel <= 0) return 0;
-    return ((_entries.length - 1) * _offset / g.travel).clamp(0.0, _entries.length - 1.0);
+    if (g == null || _entries.isEmpty) return 0;
+    return (_offset / g.spacing).clamp(0.0, _entries.length - 1.0);
   }
 
   double _offsetFor(int i) {
     final g = _geo;
-    if (g == null || _entries.length < 2) return 0;
-    return g.travel * i / (_entries.length - 1);
+    if (g == null) return 0;
+    return (i * g.spacing).clamp(0.0, g.travel);
   }
 
   void _onScroll() {
@@ -191,10 +194,10 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
       m = math.max(m, Curves.easeOutCubic.transform(_press.value));
     }
     final size = lerpDouble(g.d, g.big, m)!;
-    final cx = g.columnX(i) - m * 6 * g.s;
+    final cx = g.columnX(i);
     return (
       rect: Rect.fromCenter(center: Offset(cx, cy), width: size, height: size),
-      radius: lerpDouble(size / 2, size * 0.24, m)!,
+      radius: lerpDouble(size / 2, size * 0.23, m)!,
       morph: m,
     );
   }
@@ -465,17 +468,13 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
         onTapCancel: () {
           if (_open == null && _pressedId != null) _release();
         },
-        onLongPressStart: (d) {
-          final i = _hit(d.localPosition);
-          if (i != null) _entryActions(_entries[i]);
-        },
         child: NotificationListener<ScrollNotification>(
           onNotification: _onScrollNotification,
           child: ScrollConfiguration(
             behavior: const _AnyPointerScroll(),
             child: ListView.builder(
               controller: _scroll,
-              physics: _SnapPhysics(count: n),
+              physics: _SnapPhysics(extent: g.spacing),
               itemExtent: g.spacing,
               padding: EdgeInsets.only(top: g.padTop, bottom: g.padBottom),
               itemCount: n,
@@ -558,7 +557,7 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
     final day = focused?.createdAt ?? store.selectedDay;
     final time = clock(focused?.createdAt ?? DateTime.now());
     final title = focused == null ? 'LOG YOUR FIRST MOMENT' : focused.title.toUpperCase();
-    final labelStyle = DD.mono(9.6 * s, height: 1.32, spacing: 0.1);
+    final labelStyle = DD.mono(11.9 * s, height: 1.37);
 
     return AnimatedBuilder(
       animation: Listenable.merge([_intro, _expand, _detail]),
@@ -571,32 +570,32 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
         return Stack(
           children: [
             Positioned(
-              left: 29 * s,
-              top: g.y0 - 8 * s,
+              left: 45.8 * s,
+              top: 87.9 * s,
               child: Opacity(
                 opacity: dateO,
                 child: SwapScrambleText(stackedDate(day), style: labelStyle),
               ),
             ),
             Positioned(
-              left: 50 * s,
-              top: g.y0 + 1.18 * g.spacing - 16 * s,
+              left: 53.8 * s,
+              top: 260.7 * s,
               child: Opacity(
                 opacity: globeO,
-                child: PixelGlobe(size: 33 * s),
+                child: PixelGlobe(size: 41 * s),
               ),
             ),
             Positioned(
-              left: 44 * s,
-              top: g.y0 + 2.12 * g.spacing - 10 * s,
+              left: 33.5 * s,
+              top: 412.3 * s,
               child: Opacity(
                 opacity: timeO,
-                child: DotMatrixText(time, pitch: 3 * s, maxWidth: 80 * s, dotFraction: 0.8),
+                child: DotMatrixText(time, pitch: 3.3 * s, maxWidth: 76 * s, dotFraction: 0.8, round: true),
               ),
             ),
             Positioned(
-              left: 62 * s,
-              top: g.y0 + 2.95 * g.spacing,
+              left: 45.3 * s,
+              top: 548.5 * s,
               child: Opacity(
                 opacity: titleO,
                 child: SwapScrambleText(hardWrap(title, 7), style: labelStyle),
@@ -697,7 +696,7 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
   Widget _sideTab(_Geo g) {
     return Positioned(
       right: 0,
-      top: g.y0 + 2.45 * g.spacing,
+      top: 486 * g.s,
       child: AnimatedBuilder(
         animation: _intro,
         builder: (context, child) {
@@ -723,8 +722,8 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
 
   Widget _pill(_Geo g) {
     return Positioned(
-      right: 10 * g.s,
-      top: g.top > 30 ? 12 : 16 * g.s,
+      right: 12 * g.s,
+      top: 24 * g.s,
       child: AnimatedBuilder(
         animation: _intro,
         builder: (context, _) => UserPill(
@@ -739,30 +738,54 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
     );
   }
 
+  /// Time of day (0..1) of the entry the labels show — where the scrubber
+  /// thumb sits.
+  double get _dayFraction {
+    final e = _entries.isEmpty ? null : _entries[_labelIndex.clamp(0, _entries.length - 1)];
+    final t = e?.createdAt ?? DateTime.now();
+    return (t.hour * 60 + t.minute) / 1440;
+  }
+
+  void _scrubTo(double v) {
+    if (_open != null || _entries.isEmpty) return;
+    // Pick the entry closest to the scrubbed time of day.
+    final minutes = v * 1440;
+    var best = 0;
+    var bestD = double.infinity;
+    for (var i = 0; i < _entries.length; i++) {
+      final t = _entries[i].createdAt;
+      final d = (t.hour * 60 + t.minute - minutes).abs();
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    _labelTimer?.cancel();
+    setState(() {
+      _scrub = v;
+      _labelIndex = _labelTarget = best;
+    });
+    if (_scroll.hasClients && (_offset - _offsetFor(best)).abs() > 1) _scrollTo(best);
+  }
+
   Widget _bottomBar(_Geo g) {
     return Positioned(
-      left: 10 * g.s,
-      right: 10 * g.s,
+      left: 8 * g.s,
+      right: 7 * g.s,
       bottom: g.barBottom,
-      child: AnimatedBuilder(
-        animation: _scroll,
-        builder: (context, _) {
-          return BottomBar(
-            scale: g.s,
-            value: g.travel <= 0 ? 0 : (_offset / g.travel).clamp(0.0, 1.0),
-            count: _entries.length,
-            onMenu: _profile,
-            onExplore: _archive,
-            onScrub: (v) {
-              if (_open != null || !_scroll.hasClients) return;
-              _scroll.jumpTo(v * g.travel);
-            },
-            onScrubEnd: () {
-              if (_open != null || _entries.isEmpty) return;
-              _scrollTo(_focus.round());
-            },
-          );
-        },
+      child: TweenAnimationBuilder<double>(
+        tween: Tween(end: _scrub ?? _dayFraction),
+        duration: Duration(milliseconds: _scrub == null ? 520 : 0),
+        curve: Curves.easeOutCubic,
+        builder: (context, v, _) => BottomBar(
+          scale: g.s,
+          value: v,
+          count: _entries.length,
+          onMenu: _profile,
+          onExplore: _archive,
+          onScrub: _scrubTo,
+          onScrubEnd: () => setState(() => _scrub = null),
+        ),
       ),
     );
   }
@@ -782,15 +805,15 @@ class _AnyPointerScroll extends ScrollBehavior {
   Widget buildOverscrollIndicator(BuildContext context, Widget child, ScrollableDetails details) => child;
 }
 
-/// Natural iOS-style scrolling that comes to rest exactly on an entry, with a
+/// Natural iOS-style scrolling that comes to rest on whole rows, with a
 /// critically damped spring (no overshoot, no wobble).
 class _SnapPhysics extends ScrollPhysics {
-  const _SnapPhysics({required this.count, super.parent});
+  const _SnapPhysics({required this.extent, super.parent});
 
-  final int count;
+  final double extent;
 
   @override
-  _SnapPhysics applyTo(ScrollPhysics? ancestor) => _SnapPhysics(count: count, parent: buildParent(ancestor));
+  _SnapPhysics applyTo(ScrollPhysics? ancestor) => _SnapPhysics(extent: extent, parent: buildParent(ancestor));
 
   @override
   ScrollPhysics buildParent(ScrollPhysics? ancestor) =>
@@ -800,13 +823,12 @@ class _SnapPhysics extends ScrollPhysics {
 
   @override
   Simulation? createBallisticSimulation(ScrollMetrics position, double velocity) {
-    final step = count > 1 ? position.maxScrollExtent / (count - 1) : 0.0;
-    if (step <= 0 || position.outOfRange) return super.createBallisticSimulation(position, velocity);
+    if (extent <= 0 || position.outOfRange) return super.createBallisticSimulation(position, velocity);
     final tolerance = toleranceFor(position);
     final projected = velocity.abs() < tolerance.velocity
         ? position.pixels
         : FrictionSimulation(0.135, position.pixels, velocity).finalX;
-    final target = ((projected / step).roundToDouble() * step).clamp(
+    final target = ((projected / extent).roundToDouble() * extent).clamp(
       position.minScrollExtent,
       position.maxScrollExtent,
     );

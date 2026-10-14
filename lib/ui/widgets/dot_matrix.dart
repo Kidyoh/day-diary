@@ -40,7 +40,7 @@ const Map<String, List<String>> _glyphs = {
   'X': ['#...#', '#...#', '.#.#.', '..#..', '.#.#.', '#...#', '#...#'],
   'Y': ['#...#', '#...#', '.#.#.', '..#..', '..#..', '..#..', '..#..'],
   'Z': ['#####', '....#', '...#.', '..#..', '.#...', '#....', '#####'],
-  ':': ['.', '.', '#', '.', '.', '#', '.'],
+  ':': ['...', '.#.', '...', '...', '...', '.#.', '...'],
   '.': ['.', '.', '.', '.', '.', '.', '#'],
   '+': ['.....', '..#..', '..#..', '#####', '..#..', '..#..', '.....'],
   '-': ['.....', '.....', '.....', '#####', '.....', '.....', '.....'],
@@ -82,7 +82,11 @@ class DotMatrixText extends StatefulWidget {
     this.maxWidth,
     this.dotFraction = 0.74,
     this.reveal = 1,
+    this.round = false,
   });
+
+  /// Round dots (the timeline clock) instead of squares.
+  final bool round;
 
   final String text;
 
@@ -148,6 +152,7 @@ class _DotMatrixTextState extends State<DotMatrixText> with SingleTickerProvider
           color: widget.color,
           outline: widget.outline,
           dotFraction: widget.dotFraction,
+          round: widget.round,
         ),
       ),
     );
@@ -169,7 +174,10 @@ class _DotPainter extends CustomPainter {
     required this.color,
     required this.outline,
     required this.dotFraction,
+    required this.round,
   });
+
+  final bool round;
 
   final String from, to;
   final double t, reveal, pitch, dotFraction;
@@ -189,7 +197,7 @@ class _DotPainter extends CustomPainter {
             ..style = PaintingStyle.stroke
             ..strokeWidth = math.max(0.6, pitch * 0.08));
     final side = pitch * dotFraction;
-    final radius = Radius.circular(side * 0.12);
+    final radius = Radius.circular(round ? side / 2 : side * 0.12);
     final flickerFrame = (t * 14).floor() + (reveal * 14).floor() * 7;
 
     for (var x = 0; x < cols; x++) {
