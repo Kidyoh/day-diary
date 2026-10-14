@@ -18,7 +18,6 @@ import 'widgets/pixel_globe.dart';
 import 'widgets/scramble_text.dart';
 
 double _iv(double t, double a, double b) => ((t - a) / (b - a)).clamp(0.0, 1.0);
-double _smooth(double t) => t * t * (3 - 2 * t);
 
 /// Layout measured from the reference, scaled by screen width.
 class _Geo {
@@ -53,8 +52,12 @@ class _Geo {
 }
 
 class DiaryScreen extends StatefulWidget {
-  const DiaryScreen({super.key, required this.store});
+  const DiaryScreen({super.key, required this.store, this.startWith});
   final DiaryStore store;
+
+  /// Opens the new-entry sheet with this picker right after launch
+  /// (the last onboarding step).
+  final ImageSource? startWith;
 
   @override
   State<DiaryScreen> createState() => _DiaryScreenState();
@@ -63,9 +66,7 @@ class DiaryScreen extends StatefulWidget {
 class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin {
   final _scroll = ScrollController();
   late final _intro = AnimationController(vsync: this, duration: const Duration(milliseconds: 2200));
-  // 0 = every entry is a circle; 1 = the entry in focus becomes a rounded square.
-  late final _engage = AnimationController(vsync: this, duration: const Duration(milliseconds: 420));
-  late final _press = AnimationController(vsync: this, duration: const Duration(milliseconds: 180));
+  late final _press = AnimationController(vsync: this, duration: const Duration(milliseconds: 260));
   late final _expand = AnimationController(vsync: this, duration: const Duration(milliseconds: 760));
   late final _detail = AnimationController(vsync: this, duration: const Duration(milliseconds: 3400));
   late final _blink = AnimationController(vsync: this, duration: const Duration(milliseconds: 1000))..repeat();
@@ -98,6 +99,12 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
       if (s == AnimationStatus.completed && _open != null) _detail.forward(from: 0);
     });
     _intro.forward();
+    final first = widget.startWith;
+    if (first != null) {
+      Future.delayed(const Duration(milliseconds: 900), () {
+        if (mounted) _compose(pickFirst: first);
+      });
+    }
   }
 
   @override
@@ -105,7 +112,7 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
     store.removeListener(_onStore);
     _labelTimer?.cancel();
     _scroll.dispose();
-    for (final c in [_intro, _engage, _press, _expand, _detail, _blink]) {
+    for (final c in [_intro, _press, _expand, _detail, _blink]) {
       c.dispose();
     }
     super.dispose();
@@ -133,7 +140,6 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
     if (dayChanged) {
       if (_scroll.hasClients) _scroll.jumpTo(0);
       _labelIndex = _labelTarget = 0;
-      _engage.value = 0;
       _intro.forward(from: 0);
     }
   }
@@ -178,8 +184,9 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
 
   ({Rect rect, double radius, double morph}) _itemBox(int i, _Geo g, double focus) {
     final cy = g.y0 + i * g.spacing - _offset + _introDy(i, g);
-    final near = _smooth((1 - (i - focus).abs() * 1.4).clamp(0.0, 1.0));
-    var m = near * Curves.easeOutCubic.transform(_engage.value);
+    // Every entry is a circle; only the one under your finger swells into a
+    // rounded square (the reference's press state).
+    var m = 0.0;
     if (_pressedId != null && _entries[i].id == _pressedId) {
       m = math.max(m, Curves.easeOutCubic.transform(_press.value));
     }
@@ -219,8 +226,21 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
 
   void _scrollTo(int i) {
     if (!_scroll.hasClients) return;
-    _engage.forward();
     _scroll.animateTo(_offsetFor(i), duration: const Duration(milliseconds: 600), curve: Curves.easeOutCubic);
+  }
+
+  /// Dashed "+" circles that continue the column after the last entry, so
+  /// the day never looks empty and there is always a place to add a moment.
+  List<Rect> _ghosts(_Geo g) {
+    final n = _entries.length;
+    final out = <Rect>[];
+    for (var k = 0; k < 6; k++) {
+      final i = n + k;
+      final cy = g.y0 + i * g.spacing - _offset + _introDy(i, g);
+      if (k > 0 && cy - g.d / 2 > g.barTop - 10 * g.s) break;
+      out.add(Rect.fromCenter(center: Offset(g.columnX(i), cy), width: g.d, height: g.d));
+    }
+    return out;
   }
 
   // ------------------------------------------------------------- touches
@@ -230,12 +250,20 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
     if (i == null) return;
     final provider = EntryImage.providerFor(_entries[i]);
     if (provider != null) precacheImage(provider, context);
-    setState(() => _pressedId = _entries[i].id);
+    _labelTimer?.cancel();
+    setState(() {
+      _pressedId = _entries[i].id;
+      _labelIndex = _labelTarget = i;
+    });
     _press.forward();
   }
 
   void _onTapUp(TapUpDetails d) {
     final i = _hit(d.localPosition);
+    if (i == null) {
+      final g = _geo;
+      if (g != null && _ghosts(g).any((r) => r.contains(d.localPosition))) _compose();
+    }
     if (i == null || _entries[i].id != _pressedId) {
       _release();
       return;
@@ -251,7 +279,6 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
 
   bool _onScrollNotification(ScrollNotification n) {
     if (n is ScrollStartNotification && n.dragDetails != null) {
-      _engage.forward();
       if (_pressedId != null) _release();
     }
     if (n is ScrollEndNotification) _onScrollIdle();
@@ -378,11 +405,31 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
   Widget _items(_Geo g, int thumb) {
     return RepaintBoundary(
       child: AnimatedBuilder(
-        animation: Listenable.merge([_scroll, _intro, _engage, _press]),
+        animation: Listenable.merge([_scroll, _intro, _press]),
         builder: (context, _) {
-          if (_entries.isEmpty) return _emptySlot(g);
           final f = _focus;
           final items = <({double morph, Widget child})>[];
+          final ghosts = _ghosts(g);
+          for (var k = 0; k < ghosts.length; k++) {
+            items.add((
+              morph: -1,
+              child: Positioned.fromRect(
+                key: ValueKey('ghost$k'),
+                rect: ghosts[k],
+                child: Opacity(
+                  opacity: const [1.0, 0.5, 0.32, 0.22, 0.16, 0.12][k],
+                  child: CustomPaint(
+                    painter: _DashedCirclePainter(g.s),
+                    child: k == 0
+                        ? Center(
+                            child: Text('+', style: DD.mono(30 * g.s, weight: FontWeight.w400)),
+                          )
+                        : null,
+                  ),
+                ),
+              ),
+            ));
+          }
           for (final i in _visible(g)) {
             if (_open != null && _entries[i].id == _open!.id) continue;
             final b = _itemBox(i, g, f);
@@ -407,38 +454,10 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
     );
   }
 
-  Widget _emptySlot(_Geo g) {
-    final p = Curves.easeOutBack.transform(_iv(_intro.value, 0.1, 0.5));
-    return Stack(
-      children: [
-        Positioned(
-          left: g.columnX(0) - g.d / 2,
-          top: g.y0 - g.d / 2,
-          child: Transform.scale(
-            scale: p,
-            child: GestureDetector(
-              onTap: () => _compose(),
-              child: CustomPaint(
-                size: Size.square(g.d),
-                painter: _DashedCirclePainter(g.s),
-                child: SizedBox.square(
-                  dimension: g.d,
-                  child: Center(
-                    child: Text('+', style: DD.mono(30 * g.s, weight: FontWeight.w400)),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
   Widget _scrollSurface(_Geo g) {
     final n = math.max(_entries.length, 1);
     return IgnorePointer(
-      ignoring: _open != null || _entries.isEmpty,
+      ignoring: _open != null,
       child: GestureDetector(
         behavior: HitTestBehavior.translucent,
         onTapDown: _onTapDown,
@@ -712,8 +731,9 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
           scale: g.s,
           intro: _iv(_intro.value, 0.18, 0.75),
           name: store.userName,
+          avatar: store.avatar,
           onAvatar: _profile,
-          onBolt: () => _compose(pickFirst: ImageSource.camera),
+          onAdd: () => _compose(),
         ),
       ),
     );
@@ -735,7 +755,6 @@ class _DiaryScreenState extends State<DiaryScreen> with TickerProviderStateMixin
             onExplore: _archive,
             onScrub: (v) {
               if (_open != null || !_scroll.hasClients) return;
-              _engage.forward();
               _scroll.jumpTo(v * g.travel);
             },
             onScrubEnd: () {

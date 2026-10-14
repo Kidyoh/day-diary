@@ -50,13 +50,17 @@ class UserPill extends StatelessWidget {
     required this.scale,
     required this.intro,
     required this.name,
+    required this.avatar,
     required this.onAvatar,
-    required this.onBolt,
+    required this.onAdd,
   });
 
   final double scale, intro;
   final String name;
-  final VoidCallback onAvatar, onBolt;
+
+  /// The user's profile photo; null shows the default silhouette.
+  final ImageProvider? avatar;
+  final VoidCallback onAvatar, onAdd;
 
   @override
   Widget build(BuildContext context) {
@@ -93,7 +97,7 @@ class UserPill extends StatelessWidget {
                     opacity: contentOpacity,
                     child: GestureDetector(
                       onTap: onAvatar,
-                      child: _Avatar(size: 46 * s),
+                      child: Avatar(size: 46 * s, image: avatar),
                     ),
                   ),
                 ),
@@ -103,13 +107,13 @@ class UserPill extends StatelessWidget {
                   child: Opacity(
                     opacity: labelOpacity.clamp(0.0, 1.0),
                     child: Text(
-                      'HI ${name.split(' ').first}',
+                      pillGreeting(name),
                       maxLines: 1,
                       style: DD.mono(7.2 * s, weight: FontWeight.w400, color: Colors.white, spacing: 0.3),
                     ),
                   ),
                 ),
-                // Bolt.
+                // New entry.
                 Positioned(
                   bottom: 8 * s,
                   child: Opacity(
@@ -117,8 +121,8 @@ class UserPill extends StatelessWidget {
                     child: Transform.scale(
                       scale: lerpDouble(0.6, 1, contentOpacity),
                       child: GestureDetector(
-                        onTap: onBolt,
-                        child: _BoltButton(size: 44 * s),
+                        onTap: onAdd,
+                        child: _AddButton(size: 44 * s),
                       ),
                     ),
                   ),
@@ -132,9 +136,19 @@ class UserPill extends StatelessWidget {
   }
 }
 
-class _Avatar extends StatelessWidget {
-  const _Avatar({required this.size});
+/// `HI MAYA` — first name only, short enough for the pill.
+String pillGreeting(String name) {
+  final first = name.trim().split(RegExp(r'\s+')).first.toUpperCase();
+  if (first.isEmpty) return 'HELLO';
+  return 'HI ${first.length > 6 ? first.substring(0, 6) : first}';
+}
+
+/// Round profile photo, or a silhouette when none is set.
+class Avatar extends StatelessWidget {
+  const Avatar({super.key, required this.size, this.image, this.dot = true});
   final double size;
+  final ImageProvider? image;
+  final bool dot;
 
   @override
   Widget build(BuildContext context) {
@@ -154,18 +168,21 @@ class _Avatar extends StatelessWidget {
                 ),
               ),
               clipBehavior: Clip.antiAlias,
-              child: CustomPaint(painter: _SilhouettePainter()),
+              child: image == null
+                  ? CustomPaint(painter: _SilhouettePainter())
+                  : Image(image: image!, fit: BoxFit.cover, gaplessPlayback: true),
             ),
           ),
-          Positioned(
-            right: size * 0.02,
-            bottom: size * 0.1,
-            child: Container(
-              width: size * 0.09,
-              height: size * 0.09,
-              decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle),
+          if (dot)
+            Positioned(
+              right: size * 0.02,
+              bottom: size * 0.1,
+              child: Container(
+                width: size * 0.09,
+                height: size * 0.09,
+                decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle),
+              ),
             ),
-          ),
         ],
       ),
     );
@@ -195,8 +212,8 @@ class _SilhouettePainter extends CustomPainter {
   bool shouldRepaint(_SilhouettePainter old) => false;
 }
 
-class _BoltButton extends StatelessWidget {
-  const _BoltButton({required this.size});
+class _AddButton extends StatelessWidget {
+  const _AddButton({required this.size});
   final double size;
 
   @override
@@ -211,7 +228,7 @@ class _BoltButton extends StatelessWidget {
         height: size * 0.5,
         decoration: const BoxDecoration(color: DD.ink, shape: BoxShape.circle),
         alignment: Alignment.center,
-        child: Icon(Icons.bolt_rounded, size: size * 0.36, color: Colors.white),
+        child: Icon(Icons.add_rounded, size: size * 0.4, color: Colors.white),
       ),
     );
   }

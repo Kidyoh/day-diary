@@ -1,27 +1,33 @@
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'entry.dart';
 import 'image_store.dart';
 
-/// Holds every diary entry, the selected day and the user's name, and
-/// persists them on-device.
 /// Build with `--dart-define=EMPTY=true` for the blank edition (no sample day).
 const seedSamples = !bool.fromEnvironment('EMPTY');
 
+/// Holds every diary entry, the selected day and the user's profile, and
+/// persists them on-device.
 class DiaryStore extends ChangeNotifier {
   static const _kEntries = 'entries_v1';
   static const _kName = 'user_name';
   static const _kSeeded = 'seeded_v1';
+  static const _kAvatar = 'user_avatar';
+  static const _kOnboarded = 'onboarded_v1';
 
   late SharedPreferences _prefs;
   List<DiaryEntry> _all = [];
-  String _name = 'JACK';
+  String _name = '';
+  String? _avatar;
+  bool _onboarded = false;
   DateTime _day = dayOf(DateTime.now());
 
   String get userName => _name;
+  ImageProvider? get avatar => ImageStore.provider(_avatar);
+  bool get onboarded => _onboarded;
   DateTime get selectedDay => _day;
   bool get hasSamples => _all.any((e) => e.sample);
   int get totalCount => _all.length;
@@ -59,7 +65,9 @@ class DiaryStore extends ChangeNotifier {
   Future<void> load() async {
     await ImageStore.init();
     _prefs = await SharedPreferences.getInstance();
-    _name = _prefs.getString(_kName) ?? _name;
+    _name = _prefs.getString(_kName) ?? '';
+    _avatar = _prefs.getString(_kAvatar);
+    _onboarded = _prefs.getBool(_kOnboarded) ?? false;
     final raw = _prefs.getString(_kEntries);
     if (raw != null) {
       try {
@@ -85,9 +93,25 @@ class DiaryStore extends ChangeNotifier {
   }
 
   Future<void> setName(String name) async {
-    final clean = name.trim().toUpperCase();
-    _name = clean.isEmpty ? 'THERE' : clean;
+    _name = name.trim();
     await _prefs.setString(_kName, _name);
+    notifyListeners();
+  }
+
+  Future<void> setAvatar(List<int> bytes) async {
+    if (_avatar != null) await ImageStore.delete(_avatar!);
+    _avatar = await ImageStore.save('avatar_${DateTime.now().millisecondsSinceEpoch}', bytes);
+    await _prefs.setString(_kAvatar, _avatar!);
+    notifyListeners();
+  }
+
+  /// Saves the profile collected by the onboarding flow.
+  Future<void> completeOnboarding({required String name, List<int>? avatarBytes}) async {
+    _name = name.trim();
+    await _prefs.setString(_kName, _name);
+    if (avatarBytes != null) await setAvatar(avatarBytes);
+    _onboarded = true;
+    await _prefs.setBool(_kOnboarded, true);
     notifyListeners();
   }
 

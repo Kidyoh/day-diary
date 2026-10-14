@@ -2,7 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'data/diary_store.dart';
+
+import 'package:image_picker/image_picker.dart';
+
 import 'ui/diary_screen.dart';
+import 'ui/onboarding.dart';
 import 'ui/theme.dart';
 
 Future<void> main() async {
@@ -44,7 +48,56 @@ class DayDiaryApp extends StatelessWidget {
           selectionHandleColor: DD.ink,
         ),
       ),
-      home: DiaryScreen(store: store),
+      home: _Root(store: store),
+    );
+  }
+}
+
+/// Flash screen, then onboarding on first launch, then the diary.
+class _Root extends StatefulWidget {
+  const _Root({required this.store});
+  final DiaryStore store;
+
+  @override
+  State<_Root> createState() => _RootState();
+}
+
+enum _Phase { splash, onboarding, diary }
+
+class _RootState extends State<_Root> {
+  _Phase _phase = _Phase.splash;
+  ImageSource? _startWith;
+
+  @override
+  void initState() {
+    super.initState();
+    Future.delayed(const Duration(milliseconds: 1900), () {
+      if (mounted) setState(() => _phase = widget.store.onboarded ? _Phase.diary : _Phase.onboarding);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final child = switch (_phase) {
+      _Phase.splash => const SplashScreen(),
+      _Phase.onboarding => OnboardingScreen(
+        store: widget.store,
+        onDone: (first) => setState(() {
+          _startWith = switch (first) {
+            FirstStep.camera => ImageSource.camera,
+            FirstStep.gallery => ImageSource.gallery,
+            FirstStep.later => null,
+          };
+          _phase = _Phase.diary;
+        }),
+      ),
+      _Phase.diary => DiaryScreen(store: widget.store, startWith: _startWith),
+    };
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 600),
+      switchInCurve: Curves.easeOutCubic,
+      switchOutCurve: Curves.easeInCubic,
+      child: KeyedSubtree(key: ValueKey(_phase), child: child),
     );
   }
 }

@@ -8,7 +8,7 @@ A motion-first photo diary built in Flutter, based on the
 
 **Timeline**
 - Entries for the selected day sit in a zig-zag column of big circles. Newest is on top.
-- At rest everything is a circle. Once you scroll, the photo in focus morphs into a rounded square, and the square travels down the list as you scroll. Scrolling comes to rest exactly on an entry.
+- Everything is a circle. Press a photo and it swells into a rounded square; release to open it. Dashed + circles continue the column so there is always a place to add a moment.
 - Tap any photo to open it full screen.
 - The left side shows the focused entry. The date (`MONDAY 01 MAY`) and title (`PROJECT ASSIGNM ENT`) decode in. The time (`9:PM`) dissolves dot by dot. A pixel globe spins.
 - Bottom bar: the scrubber moves through the day, and `07 X` is the number of entries that day.
@@ -22,7 +22,7 @@ A motion-first photo diary built in Flutter, based on the
 - To close: swipe down, use the side-tab button, or press back.
 
 **Controls**
-- ⚡ in the pill: new entry from the camera.
+- + in the pill, or any dashed circle: new entry.
 - Side tab:
   - Expand / collapse
   - Archive of days
@@ -34,7 +34,7 @@ A motion-first photo diary built in Flutter, based on the
 - Everything is stored on-device.
 - Entries are kept as JSON in `shared_preferences`.
 - Photos go in the app documents folder (web keeps them inline).
-- The first launch seeds a sample day so the app looks like the reference.
+- First launch shows a splash screen and onboarding (name, optional photo, first moment). The demo edition also seeds a sample day.
 
 ## Run
 
